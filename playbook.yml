@@ -1,0 +1,135 @@
+- hosts: devserver
+  remote_user: root
+  tasks:
+  - name: rootのSSHを禁止します。
+    lineinfile:
+      dest: /etc/ssh/sshd_config
+      regexp: "^PermitRootLogin"
+      insertafter: "^#PermitRootLogin"
+      line: "PermitRootLogin no"
+  - name: railsユーザを作成します。
+    group:
+      name: rails
+  - name: railsユーザを作成します。
+    user:
+      name: rails
+      password: "{{ 'Hoge123!'|password_hash('sha512') }}"
+      shell: /bin/bash
+      group: rails
+      groups: wheel
+      append: yes
+  - name: Gitをインストールします。
+    yum:
+      name: git
+      state: latest
+  - name: rbenvをインストールします。Gitから取得します。
+    git:
+      repo: "https://github.com/rbenv/rbenv.git"
+      dest: "/usr/local/src/rbenv"
+  - name: rbenvをインストールします。パスを通して再読み込みします。
+    shell: |
+      echo 'export RBENV_ROOT="/usr/local/src/rbenv/"' > /etc/profile.d/rbenv.sh　
+      echo 'export PATH="${RBENV_ROOT}/bin:${PATH}"' >> /etc/profile.d/rbenv.sh
+      echo 'eval "$(rbenv init -)"' >> /etc/profile.d/rbenv.sh
+      . /etc/profile.d/rbenv.sh
+  - name: Rubyのインストールに必要なパッケージからインストールします。
+    yum: name={{ item }} state=latest
+    with_items:
+      - bzip2
+      - openssl-devel
+      - readline-devel
+      - zlib-devel
+      - gcc
+      - python-pip                     # このパッケージのみansible用にインストールします。
+  - name: pexpectをインストールします。    # 対話形式に答えるためのモジュールです。
+    pip:
+      name: pexpect
+  - name: Rubyのインストールに必要なパッケージからインストールします。
+    git:
+      repo: "https://github.com/rbenv/ruby-build.git"
+      dest: "/usr/local/src/rbenv/plugins/ruby-build"
+  - name: Rubyのインストールに必要なパッケージからインストールします。
+    command: /usr/local/src/rbenv/plugins/ruby-build/install.sh
+  - name: Ruby本体をインストールします。
+    command: rbenv install 2.5.1
+    register: rbenv_return_code
+    failed_when: rbenv_return_code.rc not in [0, 1]
+  - name: 使用するRubyを指定します。
+    command: rbenv global 2.5.1
+  - name: Railsをインストールします。
+    command: gem install -N rails
+  - name: bundlerをインストールします。
+    expect:
+      command: gem install bundler
+      responses:
+        'Overwrite the executable? [yN]': "y"
+  - name: Railsをインストールします。
+    command: rbenv rehash
+  - name: MariaDBをアンインストールします。
+    yum:
+      name: mariadb-libs
+      state: removed
+  - name: MySQLのリポジトリを登録します。
+    yum:
+      name: http://dev.mysql.com/get/mysql57-community-release-el7-7.noarch.rpm
+      state: present
+  - name: MySQLをインストールします。
+    yum:
+      name: mysql-community-server
+      state: present
+  - name: MySQLの起動と自動起動の設定をします。
+    systemd:
+      name: mysqld
+      state: started
+      enabled: yes
+  - name: MySQLのrootの初期パスワードを探します。
+    shell: cat /var/log/mysqld.log | grep "temporary password" | awk '{print $NF}'
+    register: mysql_root_password
+  - name: 基本的な初期設定を行います。
+    expect:
+      command: mysql_secure_installation
+      responses:
+        'Enter password for user root:': "{{ mysql_root_password.stdout }}"
+        'New password:': "Hogehoge123!"
+        'Re-enter new password:': "Hogehoge123!"
+        'Change the password for root.*:': "y"
+        'Do you wish to continue with the password provided.*:': "y"
+        'Remove anonymous users.*:': "y"
+        'Disallow root login remotely.*:': "y"
+        'Remove test database and access to it.*:': "y"
+        'Reload privilege tables now.* :': "y"
+  - name: MySQLの設定ファイルを書き換えます。
+    lineinfile:
+      path: /etc/my.cnf
+      line: "{{ item }}"
+    with_items:
+      - "character-set-server=utf8mb4    #[mysqld]セクション\n\n"
+      - "[client]"
+      - "default-character-set=utf8mb4"
+  - name: MySQLを再起動します。
+    systemd:
+      name: mysqld
+      state: restarted
+  - name: Railsアプリ用のDBアカウントを作成します。
+    shell: |
+      echo 'GRANT ALL ON *.* TO '\''rails'\''@'\''%'\'' IDENTIFIED BY '\''Hogehoge123!'\'';' | mysql -uroot -pHogehoge123! -vvv
+  - name: Rails向けのMySQLパッケージをインストールします。
+    yum:
+      name: mysql-devel
+      state: latest
+  - name: Rails向けのMySQLパッケージをインストールします。
+    command: gem install mysql2 -v '0.5.1'
+  - name: JavaScriptの実行環境をインストールします。
+    yum: name={{ item }} state=latest
+    with_items:
+      - nodejs
+      - npm
+  - name: ファイヤーウォールを一時的に停止します。
+    systemd:
+      name: firewalld
+      state: stopped
+      enabled: yes
+  - name: SSHを再起動します。
+    systemd:
+      name: sshd
+      state: restarted
